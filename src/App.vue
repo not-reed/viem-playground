@@ -1,6 +1,6 @@
 <script setup>
-import { createPublicClient, http } from 'viem';
-import { computed, ref } from 'vue';
+import { createPublicClient, http, toHex } from 'viem';
+import { computed, ref, watch } from 'vue';
 import * as chains from 'viem/chains'
 import { Interface } from 'ethers';
 
@@ -9,16 +9,40 @@ function call() {
 
   const client = createPublicClient({
     chain: chains[network.value],
-    transport: http(rpc.value || chains[network.value].rpcUrls.public.http[0])
+    transport: http(rpc.value.trim() || chains[network.value].rpcUrls.public.http[0])
   })
   return client
 }
-const rpc = ref('')
-const address = ref('')
-const blockNumber = ref('')
-const abiString = ref('')
-const network = ref('mainnet')
-const msgSender = ref('')
+const network = ref(localStorage.getItem("viem:network") || 'mainnet')
+const rpc = ref(localStorage.getItem(`viem:rpc:${network.value}`) || '')
+const address = ref(localStorage.getItem("viem:address") || '')
+const blockNumber = ref(localStorage.getItem("viem:block") || '')
+const abiString = ref(localStorage.getItem("viem:abi") || '')
+const msgSender = ref(localStorage.getItem("viem:sender") || '')
+
+watch(network, () => {
+  localStorage.setItem("viem:network", network.value)
+  const storedRpc = localStorage.getItem(`viem:rpc:${network.value}`)
+  if (storedRpc) {
+    rpc.value = storedRpc
+  } else {
+    rpc.value = ''
+  }
+})
+
+watch(rpc, () => {
+  // don't cache default values
+  const defaultValue = chains[network.value].rpcUrls.public.http[0]
+  if (rpc.value.trim() === defaultValue) {
+    localStorage.removeItem(`viem:rpc:${network.value}`)
+  } else {
+    localStorage.setItem(`viem:rpc:${network.value}`, rpc.value.trim())
+  }
+})
+watch(address, () => { localStorage.setItem("viem:address", address.value.trim()) })
+watch(blockNumber, () => { localStorage.setItem("viem:block", blockNumber.value.trim()) })
+watch(abiString, () => { localStorage.setItem("viem:abi", abiString.value.trim()) })
+watch(msgSender, () => { localStorage.setItem("viem:sender", msgSender.value.trim()) })
 
 const abi = computed(() => {
   try {
@@ -56,7 +80,7 @@ async function listenEvent(item) {
   }
 
   const unwatch = client.watchEvent({
-    address: address.value,
+    address: address.value.trim(),
     event: {
       name: item.name,
       type: item.type,
@@ -107,7 +131,7 @@ async function callFunc(e, item) {
       inputs: item.inputs.map(({ name, type }) => ({ name, type })),
       outputs: item.outputs.map(({ name, type }) => ({ name, type }))
     }],
-    address: address.value,
+    address: address.value.trim(),
     functionName: item.name,
   }
 
@@ -147,11 +171,33 @@ function prettifyAbi() {
   abiString.value = JSON.stringify(JSON.parse(abiString.value), null, 4)
 }
 
+async function readRawStorage(e) {
+
+  const formData = new FormData(e.target);
+
+  const client = call()
+  const raw = await client.getStorageAt({
+    address: address.value.trim(),
+    slot: toHex(Number(formData.get('slot'))),
+  })
+
+  const contractKey = `${address.value}`
+  if (!results.value[contractKey]) {
+    results.value[contractKey] = {}
+  }
+
+  if (!results.value[contractKey].storage) {
+    results.value[contractKey].storage = []
+  }
+  results.value[contractKey].storage.unshift({ result: raw })
+  console.log(raw)
+}
+
 
 </script>
 
 <template>
-  <form @submit.prevent="call" class="flex flex-wrap gap-2">
+  <div class="flex flex-wrap gap-2">
     <div class="w-full">Network Config:</div>
 
     <select class="px-4 py-2 w-96" v-model="network">
@@ -179,9 +225,14 @@ function prettifyAbi() {
     <textarea placeholder="abi" v-model=abiString class="w-full h-32 px-4 py-2"></textarea>
     <div v-if="abiString.length && !abi.length" class="text-red-500 w-full">Invalid ABI, Please Check Format. Must be
       parsable JSON</div>
+  </div>
 
-
-    <button type="submit">Query</button>
+  <form @submit.prevent="readRawStorage" class="text-left mt-4">Read Raw Storage:
+    <input placeholder="slot" name="slot" class="px-4 py-2" />
+    <button type="submit" class="bg-zinc-900 py-2">Read</button>
+    <div class="bg-zinc-700 px-4 py-2" v-if="results[address]?.storage?.length">
+      {{ results[address].storage[0].result }}
+    </div>
   </form>
 
   <div class="text-left"> Events:
@@ -238,8 +289,6 @@ function prettifyAbi() {
       </form>
 
       <div class="bg-zinc-700 px-4 py-2" v-if="results[address]?.[item.format('sighash')]?.length">
-
-
         {{ results[address][item.format('sighash')][0].result }}
       </div>
     </div>
